@@ -8,7 +8,7 @@ from AnnieXMedia.misc import dbb, heroku
 from .logging import LOGGER
 
 StorageManager()
-git()
+#git()
 dbb()
 heroku()
 
