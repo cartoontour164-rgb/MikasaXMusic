@@ -67,38 +67,41 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         if len(_cache) > YOUTUBE_META_MAX:
             _cache.clear()
 
-    # --- THE PIPED API BYPASS ---
+    # --- THE PIPED API ROTATOR ---
+    PIPED_APIS = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.syncpundit.io",
+        "https://pipedapi.tokhmi.xyz",
+        "https://api.piped.yt",
+        "https://pipedapi.leptons.xyz"
+    ]
+
     try:
         safe_query = urllib.parse.quote(query)
-        api_url = f"https://pipedapi.kavin.rocks/search?q={safe_query}&filter=all"
+        result = []
         async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    items = data.get("items", [])
-                    # Grab the first streamable audio/video track
-                    first_video = next((item for item in items if item.get("type") == "stream"), None)
-                    if first_video:
-                        duration_seconds = first_video.get("duration", 0)
-                        mins, secs = divmod(duration_seconds, 60)
-                        result = [{
-                            "id": first_video.get("url", "").replace("/watch?v=", ""),
-                            "title": first_video.get("title", ""),
-                            "duration": f"{mins}:{secs:02d}",
-                            "thumbnails": [{"url": first_video.get("thumbnail", "")}]
-                        }]
-                    else:
-                        result = []
-                else:
-                    result = []
+            for base_api in PIPED_APIS:
+                api_url = f"{base_api}/search?q={safe_query}&filter=all"
+                try:
+                    async with session.get(api_url, timeout=7) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            items = data.get("items", [])
+                            first_video = next((item for item in items if item.get("type") == "stream"), None)
+                            if first_video:
+                                duration_seconds = first_video.get("duration", 0)
+                                mins, secs = divmod(duration_seconds, 60)
+                                result = [{
+                                    "id": first_video.get("url", "").replace("/watch?v=", ""),
+                                    "title": first_video.get("title", ""),
+                                    "duration": f"{mins}:{secs:02d}",
+                                    "thumbnails": [{"url": first_video.get("thumbnail", "")}]
+                                }]
+                                break # Success! Stop trying other servers
+                except Exception:
+                    continue # Server is down, instantly try the next one
     except Exception:
         result = []
-
-    if result:
-        async with _cache_lock:
-            _cache[key] = (now, result)
-
-    return result
 
 
 # === Main Class ===
