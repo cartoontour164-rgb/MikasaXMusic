@@ -180,46 +180,48 @@ class YouTubeAPI:
     async def details(
         self, link: str, videoid: Union[str, bool, None] = None
     ) -> Tuple[str, Optional[str], int, str, str]:
-        info = await self._fetch_video_info(self._prepare_link(link, videoid))
-        if not info:
-            raise ValueError("Song not found on JioSaavn")
-        thumb = info.get("thumbnails", [{}])[0].get("url", "")
-        return info.get("title", ""), info.get("duration", ""), info.get("raw_duration", 0), thumb, info.get("id", "")
-
-
-        
-    @capture_internal_err
-    async def title(self, link: str, videoid: Union[str, bool, None] = None) -> str:
-        info = await self._fetch_video_info(self._prepare_link(link, videoid))
-        return info.get("title", "") if info else ""
-
-    @capture_internal_err
-    async def duration(self, link: str, videoid: Union[str, bool, None] = None) -> Optional[str]:
-        info = await self._fetch_video_info(self._prepare_link(link, videoid))
-        return info.get("duration") if info else None
-
-    @capture_internal_err
-    async def thumbnail(self, link: str, videoid: Union[str, bool, None] = None) -> str:
-        info = await self._fetch_video_info(self._prepare_link(link, videoid))
-        return (
-            info.get("thumbnail")
-            or info.get("thumbnails", [{}])[-1].get("url", "")
-        ).split("?")[0] if info else ""
+        target_id = videoid if videoid else link
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://saavn.dev/api/songs/{target_id}", timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    songs = data.get("data", [])
+                    if songs:
+                        first = songs[0] if isinstance(songs, list) else songs
+                        duration_seconds = int(first.get("duration", 0))
+                        mins, secs = divmod(duration_seconds, 60)
+                        images = first.get("image", [])
+                        thumb = images[-1].get("url") if images else ""
+                        return first.get("name", "Unknown Title"), f"{mins}:{secs:02d}", duration_seconds, thumb, target_id
+        raise ValueError("Song not found on JioSaavn")
 
     @capture_internal_err
     async def track(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[Dict, str]:
-        info = await self._fetch_video_info(self._prepare_link(link, videoid))
-        if not info:
-            raise ValueError("Song not found on JioSaavn")
-        thumb = info.get("thumbnails", [{}])[0].get("url", "")
-        details = {
-            "title": info.get("title", ""),
-            "link": link, 
-            "vidid": info.get("id", ""),  # The real JioSaavn ID
-            "duration_min": info.get("duration", ""),
-            "thumb": thumb,
-        }
-        return details, info.get("id", "")
+        target_id = videoid if videoid else link
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://saavn.dev/api/songs/{target_id}", timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    songs = data.get("data", [])
+                    if songs:
+                        first = songs[0] if isinstance(songs, list) else songs
+                        duration_seconds = int(first.get("duration", 0))
+                        mins, secs = divmod(duration_seconds, 60)
+                        images = first.get("image", [])
+                        thumb = images[-1].get("url") if images else ""
+                        
+                        details = {
+                            "title": first.get("name", "Unknown Title"),
+                            "link": link, 
+                            "vidid": target_id,
+                            "duration_min": f"{mins}:{secs:02d}",
+                            "thumb": thumb,
+                        }
+                        return details, target_id
+        raise ValueError("Song not found on JioSaavn")
+
 
 
     # === Media & Formats ===
