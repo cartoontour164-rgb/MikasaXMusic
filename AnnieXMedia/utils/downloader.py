@@ -235,10 +235,10 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
     if not link or not link.startswith("http"):
         return None
 
-    # Generate a safe file name based on the current time
     import time
     vid = str(int(time.time()))
-    out_path = f"{DOWNLOAD_DIR}/{vid}.mp4"
+    ext = "mp4" if type == "video" else "m4a"
+    out_path = f"{DOWNLOAD_DIR}/{vid}.{ext}"
 
     key = f"{type}:{link}"
 
@@ -246,7 +246,8 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
         # Uses the built-in aiohttp downloader at the top of the file
         result = await download_file(link, out_path)
         if result and title:
-            log_download_source(title, "JioSaavn Direct Stream")
+            log_download_source(title, "JioSaavn API Stream")
         return result
 
     return await deduplicate_download(key, run)
+
