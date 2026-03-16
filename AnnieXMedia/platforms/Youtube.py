@@ -10,7 +10,9 @@ from typing import Dict, List, Optional, Tuple, Union
 import yt_dlp
 from pyrogram.enums import MessageEntityType
 from pyrogram.types import Message
-from youtubesearchpython.aio import VideosSearch, Playlist
+import aiohttp
+import urllib.parse
+
 
 from AnnieXMedia.utils.cookie_handler import COOKIE_PATH
 from AnnieXMedia.utils.database import is_on_off
@@ -32,19 +34,9 @@ YOUTUBE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 
 
 # === Helpers ===
-def _cookiefile_path() -> Optional[str]:
-    path = str(COOKIE_PATH)
-    try:
-        if path and os.path.exists(path) and os.path.getsize(path) > 0:
-            return path
-    except Exception:
-        pass
-    return None
-
-
 def _cookies_args() -> List[str]:
-    path = _cookiefile_path()
-    return ["--cookies", path] if path else []
+    return [] # Cookies completely disabled!
+
 
 
 async def _exec_proc(*args: str) -> Tuple[bytes, bytes]:
@@ -75,9 +67,30 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         if len(_cache) > YOUTUBE_META_MAX:
             _cache.clear()
 
+    # --- THE PIPED API BYPASS ---
     try:
-        data = await VideosSearch(query, limit=1).next()
-        result = data.get("result", [])
+        safe_query = urllib.parse.quote(query)
+        api_url = f"https://pipedapi.kavin.rocks/search?q={safe_query}&filter=all"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data.get("items", [])
+                    # Grab the first streamable audio/video track
+                    first_video = next((item for item in items if item.get("type") == "stream"), None)
+                    if first_video:
+                        duration_seconds = first_video.get("duration", 0)
+                        mins, secs = divmod(duration_seconds, 60)
+                        result = [{
+                            "id": first_video.get("url", "").replace("/watch?v=", ""),
+                            "title": first_video.get("title", ""),
+                            "duration": f"{mins}:{secs:02d}",
+                            "thumbnails": [{"url": first_video.get("thumbnail", "")}]
+                        }]
+                    else:
+                        result = []
+                else:
+                    result = []
     except Exception:
         result = []
 
@@ -140,12 +153,9 @@ class YouTubeAPI:
     @capture_internal_err
     async def _fetch_video_info(self, query: str, *, use_cache: bool = True) -> Optional[Dict]:
         q = self._prepare_link(query)
-        if use_cache and not q.startswith("http"):
-            res = await cached_youtube_search(q)
-            return res[0] if res else None
-        data = await VideosSearch(q, limit=1).next()
-        result = data.get("result", [])
-        return result[0] if result else None
+        res = await cached_youtube_search(q)
+        return res[0] if res else None
+
 
     @capture_internal_err
     async def is_live(self, link: str) -> bool:
@@ -352,19 +362,18 @@ class YouTubeAPI:
     async def slider(
         self, link: str, query_type: int, videoid: Union[str, bool, None] = None
     ) -> Tuple[str, Optional[str], str, str]:
-        data = await VideosSearch(self._prepare_link(link, videoid), limit=10).next()
-        results = data.get("result", [])
-        if not results or query_type >= len(results):
-            raise IndexError(
-                f"Query type index {query_type} out of range (found {len(results)} results)"
-            )
-        r = results[query_type]
+        q = self._prepare_link(link, videoid)
+        res = await cached_youtube_search(q)
+        if not res:
+            raise IndexError("No results found via Piped API")
+        r = res[0]
         return (
             r.get("title", ""),
             r.get("duration"),
             r.get("thumbnails", [{}])[-1].get("url", "").split("?")[0],
             r.get("id", ""),
         )
+
 
     @capture_internal_err
     async def download(
