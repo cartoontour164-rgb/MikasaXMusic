@@ -53,7 +53,7 @@ async def _exec_proc(*args: str) -> Tuple[bytes, bytes]:
         return b"", b"timeout"
 
 
-@capture_internal_err
+@@capture_internal_err
 async def cached_youtube_search(query: str) -> List[Dict]:
     key = f"q:{query}"
     now = time.time()
@@ -66,18 +66,15 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         if len(_cache) > YOUTUBE_META_MAX:
             _cache.clear()
 
-    # --- THE STOLEN OFFICIAL JIOSAAVN API ---
     try:
         import aiohttp
+        import json
         api_url = "https://www.jiosaavn.com/api.php"
-        
-        # Stolen directly from Ns-AnoNymouS
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
             "Referer": "https://www.jiosaavn.com/",
             "Origin": "https://www.jiosaavn.com"
         }
-        
         params = {
             'p': 1,
             'q': query,
@@ -93,20 +90,20 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         async with aiohttp.ClientSession() as session:
             async with session.get(api_url, params=params, headers=headers, timeout=10) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
+                    # THE SMOKING GUN FIX: Read as raw text first, just like the original dev!
+                    response_text = await resp.text()
+                    data = json.loads(response_text)
+                    
                     results = data.get("results", [])
                     if results:
                         first = results[0]
-                        # JioSaavn official API returns duration in seconds as a string
                         duration_seconds = int(first.get("duration", 0))
                         mins, secs = divmod(duration_seconds, 60)
-                        
-                        # Fix image URL (JioSaavn returns low res by default, replace with 500x500)
                         thumb = first.get("image", "").replace("150x150", "500x500")
                         
                         result = [{
                             "id": first.get("id"),
-                            "title": first.get("title", "Unknown Title"),
+                            "title": first.get("title", "Unknown Title").replace("&quot;", '"'),
                             "duration": f"{mins}:{secs:02d}",
                             "thumbnails": [{"url": thumb}],
                             "raw_duration": duration_seconds
@@ -119,7 +116,6 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         async with _cache_lock:
             _cache[key] = (now, result)
     return result
-
 
 
 
@@ -336,36 +332,57 @@ class YouTubeAPI:
         self, link: str, mystic, *, video: Union[bool, str, None] = None, videoid: Union[str, bool, None] = None
     ) -> Union[Tuple[str, Optional[bool]], Tuple[None, None]]:
         target_id = videoid if videoid else link
-        SAAVN_APIS = [
-            "https://saavn.dev",
-            "https://jiosaavn-api-privatecvc2.vercel.app",
-            "https://jiosaavn-api-v3.vercel.app",
-            "https://saavn.me"
-        ]
         dl_link = None
+        
         try:
             import aiohttp
+            import json
+            api_url = "https://www.jiosaavn.com/api.php"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+                "Referer": "https://www.jiosaavn.com/",
+                "Origin": "https://www.jiosaavn.com"
+            }
+            
             async with aiohttp.ClientSession() as session:
-                for base_api in SAAVN_APIS:
-                    try:
-                        api_url = f"{base_api}/api/songs/{target_id}" if "dev" in base_api else f"{base_api}/songs?id={target_id}"
-                        async with session.get(api_url, timeout=7) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                songs = data.get("data", [])
-                                if songs:
-                                    first = songs[0] if isinstance(songs, list) else songs
-                                    dls = first.get("downloadUrl", [])
-                                    dl_link = dls[-1].get("url") if dls else None
-                                    if dl_link:
-                                        break
-                    except Exception:
-                        continue
-        except Exception:
+                # Step 1: Get the hidden Encrypted Media URL
+                song_params = {
+                    '__call': 'webapi.get',
+                    'token': target_id,
+                    'type': 'song',
+                    'ctx': 'web6dot0',
+                    'api_version': 4,
+                    '_format': 'json',
+                    '_marker': 0
+                }
+                async with session.get(api_url, params=song_params, headers=headers, timeout=10) as resp1:
+                    if resp1.status == 200:
+                        song_data = json.loads(await resp1.text())
+                        songs = song_data.get("songs", [])
+                        if songs:
+                            enc_url = songs[0].get("more_info", {}).get("encrypted_media_url")
+                            if enc_url:
+                                # Step 2: Use the official API to decrypt the actual stream link
+                                auth_params = {
+                                    "__call": 'song.generateAuthToken',
+                                    "url": enc_url,
+                                    "bitrate": 320,
+                                    "api_version": 4,
+                                    "_format": "json",
+                                    "ctx": "wap6dot0",
+                                    "_marker": 0
+                                }
+                                async with session.get(api_url, params=auth_params, headers=headers, timeout=10) as resp2:
+                                    if resp2.status == 200:
+                                        auth_data = json.loads(await resp2.text())
+                                        dl_link = auth_data.get("auth_url")
+        except Exception as e:
+            print(f"Download API Error: {e}")
             pass
 
         if not dl_link:
             return None, None
 
+        from AnnieXMedia.utils.downloader import yt_dlp_download
         p = await yt_dlp_download(dl_link, type="video" if video else "audio", title="JioSaavn Track")
         return (p, True) if p else (None, None)
