@@ -67,41 +67,47 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         if len(_cache) > YOUTUBE_META_MAX:
             _cache.clear()
 
-    # --- THE PIPED API ROTATOR ---
-    PIPED_APIS = [
-        "https://pipedapi.kavin.rocks",
-        "https://pipedapi.syncpundit.io",
-        "https://pipedapi.tokhmi.xyz",
-        "https://api.piped.yt",
-        "https://pipedapi.leptons.xyz"
+    # --- THE INVIDIOUS API ROTATOR ---
+    INVIDIOUS_APIS = [
+        "https://vid.puffyan.us",
+        "https://invidious.nerdvpn.de",
+        "https://inv.tux.pizza",
+        "https://invidious.jing.rocks",
+        "https://invidious.fdn.fr"
     ]
 
     try:
         safe_query = urllib.parse.quote(query)
         result = []
         async with aiohttp.ClientSession() as session:
-            for base_api in PIPED_APIS:
-                api_url = f"{base_api}/search?q={safe_query}&filter=all"
+            for base_api in INVIDIOUS_APIS:
+                api_url = f"{base_api}/api/v1/search?q={safe_query}"
                 try:
                     async with session.get(api_url, timeout=7) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            items = data.get("items", [])
-                            first_video = next((item for item in items if item.get("type") == "stream"), None)
+                            first_video = next((item for item in data if item.get("type") == "video"), None)
                             if first_video:
-                                duration_seconds = first_video.get("duration", 0)
+                                duration_seconds = first_video.get("lengthSeconds", 0)
                                 mins, secs = divmod(duration_seconds, 60)
+                                
+                                # Fix proxied thumbnails
+                                thumb = first_video.get("videoThumbnails", [{}])[0].get("url", "")
+                                if thumb and thumb.startswith("/"):
+                                    thumb = base_api + thumb
+                                    
                                 result = [{
-                                    "id": first_video.get("url", "").replace("/watch?v=", ""),
+                                    "id": first_video.get("videoId", ""),
                                     "title": first_video.get("title", ""),
                                     "duration": f"{mins}:{secs:02d}",
-                                    "thumbnails": [{"url": first_video.get("thumbnail", "")}]
+                                    "thumbnails": [{"url": thumb}]
                                 }]
-                                break # Success! Stop trying other servers
+                                break # Success! Stop searching
                 except Exception:
-                    continue # Server is down, instantly try the next one
+                    continue # Server blocked us, instantly try the next one
     except Exception:
         result = []
+
 
 
 # === Main Class ===
