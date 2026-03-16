@@ -9,7 +9,7 @@ from typing import Dict, Optional
 import aiofiles
 import aiohttp
 from aiohttp import TCPConnector
-from yt_dlp import YoutubeDL
+
 
 from AnnieXMedia.core.dir import CACHE_DIR, DOWNLOAD_DIR
 from AnnieXMedia.utils.cookie_handler import COOKIE_PATH as _COOKIES_FILE
@@ -200,24 +200,38 @@ def get_final_path_from_info(info: Dict) -> Optional[str]:
     return matches[0] if matches else None
 
 
-def download_with_ytdlp_sync(link: str, fmt: str) -> Optional[str]:
+async def piped_download(vid: str, download_type: str) -> Optional[str]:
+    api_url = f"https://pipedapi.kavin.rocks/streams/{vid}"
     try:
-        opts = get_ytdlp_base_opts()
-        opts["format"] = fmt
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(link, download=False)
-            if path := get_final_path_from_info(info):
-                return path
-            ydl.download([link])
-            return get_final_path_from_info(info)
+        session = await get_http_session()
+        async with session.get(api_url, timeout=15) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+
+            if download_type == "audio":
+                streams = data.get("audioStreams", [])
+                if not streams:
+                    return None
+                # Grab the highest bitrate m4a stream to save data and speed up download
+                best_stream = max([s for s in streams if s.get("format") == "m4a"] or streams, key=lambda x: x.get("bitrate", 0))
+                ext = "m4a"
+            else:
+                streams = data.get("videoStreams", [])
+                if not streams:
+                    return None
+                # Grab a standard mp4 stream
+                best_stream = next((s for s in streams if s.get("format") == "mp4" and s.get("quality") == "720p"), streams[0])
+                ext = "mp4"
+
+            dl_url = best_stream.get("url")
+            if not dl_url:
+                return None
+
+            out_path = f"{DOWNLOAD_DIR}/{vid}.{ext}"
+            return await download_file(dl_url, out_path)
     except Exception:
         return None
-
-
-async def run_with_semaphore(coro):
-    async with SEM:
-        return await coro
-
 
 async def deduplicate_download(key: str, runner):
     async with _inflight_lock:
@@ -236,79 +250,22 @@ async def deduplicate_download(key: str, runner):
         async with _inflight_lock:
             _inflight.pop(key, None)
 
-
-async def race_ytdlp_and_api(yt_task, api_task, title: str):
-    done, pending = await asyncio.wait(
-        {yt_task, api_task}, return_when=asyncio.FIRST_COMPLETED
-    )
-    for task in done:
-        result = task.result()
-        if result and os.path.exists(result):
-            source = "yt-dlp" if task is yt_task else "API"
-            log_download_source(title, source)
-            for p in pending:
-                p.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await p
-            return result
-    for task in pending:
-        try:
-            result = await task
-            if result and os.path.exists(result):
-                source = "yt-dlp" if task is yt_task else "API"
-                log_download_source(title, source)
-                return result
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass
-    return None
-
-
 async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str]:
-    loop = asyncio.get_running_loop()
     vid = extract_video_id(link)
+    if not vid:
+        return None
+
     if cached := find_cached_file(vid):
         if title:
             LOGGER.info(f"Track '{title}' - Served from cache")
         return cached
 
-    if type == "audio":
-        key = f"audio:{link}"
+    key = f"{type}:{link}"
 
-        async def run():
-            ytdlp_task = asyncio.create_task(
-                run_with_semaphore(
-                    loop.run_in_executor(None, download_with_ytdlp_sync, link, "bestaudio[ext=webm][acodec=opus]")
-                )
-            )
-            api_task = asyncio.create_task(api_download_audio(link)) if USE_AUDIO_API else None
-            if api_task:
-                return await race_ytdlp_and_api(ytdlp_task, api_task, title or "Unknown")
-            result = await ytdlp_task
-            if result and title:
-                log_download_source(title, "yt-dlp")
-            return result
+    async def run():
+        result = await piped_download(vid, type)
+        if result and title:
+            log_download_source(title, "Piped API Direct Stream")
+        return result
 
-        return await deduplicate_download(key, run)
-
-    elif type == "video":
-        key = f"video:{link}"
-
-        async def run():
-            ytdlp_task = asyncio.create_task(
-                run_with_semaphore(
-                    loop.run_in_executor(None, download_with_ytdlp_sync, link, "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)")
-                )
-            )
-            api_task = asyncio.create_task(api_download_video(link)) if USE_VIDEO_API else None
-            if api_task:
-                return await race_ytdlp_and_api(ytdlp_task, api_task, title or "Unknown")
-            result = await ytdlp_task
-            if result and title:
-                log_download_source(title, "yt-dlp")
-            return result
-
-        return await deduplicate_download(key, run)
-
-    return None
+    return await deduplicate_download(key, run)
