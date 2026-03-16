@@ -69,8 +69,9 @@ async def cached_youtube_search(query: str) -> List[Dict]:
 
     # --- THE JIOSAAVN API PIVOT ---
     try:
+        import urllib.parse
+        import aiohttp
         safe_query = urllib.parse.quote(query)
-        # Using a reliable open-source JioSaavn API
         api_url = f"https://saavn.dev/api/search/songs?query={safe_query}"
         async with aiohttp.ClientSession() as session:
             async with session.get(api_url, timeout=10) as resp:
@@ -85,12 +86,8 @@ async def cached_youtube_search(query: str) -> List[Dict]:
                         images = first.get("image", [])
                         thumb = images[-1].get("url") if images else ""
                         
-                        # Grab the highest quality download link
-                        dls = first.get("downloadUrl", [])
-                        dl_link = dls[-1].get("url") if dls else ""
-                        
                         result = [{
-                            "id": dl_link,  # Secretly passing the direct audio link as the ID!
+                            "id": first.get("id"),  # The real JioSaavn short ID!
                             "title": first.get("name", "Unknown Title"),
                             "duration": f"{mins}:{secs:02d}",
                             "thumbnails": [{"url": thumb}],
@@ -107,6 +104,7 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         async with _cache_lock:
             _cache[key] = (now, result)
     return result
+
 
 
 
@@ -179,15 +177,17 @@ class YouTubeAPI:
             return False
 
     @capture_internal_err
-    async def details(self, link: str, videoid: Union[str, bool, None] = None):
-        info = await self._fetch_video_info(link)
+    async def details(
+        self, link: str, videoid: Union[str, bool, None] = None
+    ) -> Tuple[str, Optional[str], int, str, str]:
+        info = await self._fetch_video_info(self._prepare_link(link, videoid))
         if not info:
             raise ValueError("Song not found on JioSaavn")
         thumb = info.get("thumbnails", [{}])[0].get("url", "")
         return info.get("title", ""), info.get("duration", ""), info.get("raw_duration", 0), thumb, info.get("id", "")
 
-        
 
+        
     @capture_internal_err
     async def title(self, link: str, videoid: Union[str, bool, None] = None) -> str:
         info = await self._fetch_video_info(self._prepare_link(link, videoid))
@@ -207,15 +207,15 @@ class YouTubeAPI:
         ).split("?")[0] if info else ""
 
     @capture_internal_err
-    async def track(self, link: str, videoid: Union[str, bool, None] = None):
-        info = await self._fetch_video_info(link)
+    async def track(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[Dict, str]:
+        info = await self._fetch_video_info(self._prepare_link(link, videoid))
         if not info:
             raise ValueError("Song not found on JioSaavn")
         thumb = info.get("thumbnails", [{}])[0].get("url", "")
         details = {
             "title": info.get("title", ""),
-            "link": info.get("id", ""), # This is now the direct download link
-            "vidid": "jiosaavn_track", 
+            "link": link, 
+            "vidid": info.get("id", ""),  # The real JioSaavn ID
             "duration_min": info.get("duration", ""),
             "thumb": thumb,
         }
@@ -343,30 +343,34 @@ class YouTubeAPI:
         video: Union[bool, str, None] = None,
         videoid: Union[str, bool, None] = None,
     ) -> Union[Tuple[str, Optional[bool]], Tuple[None, None]]:
-        link = self._prepare_link(link, videoid)
+        # stream.py passes the short JioSaavn ID through 'videoid'
+        target_id = videoid if videoid else link
 
-        if video:
-            if await self.is_live(link):
-                status, stream_url = await self.video(link)
-                if status == 1:
-                    return stream_url, None
-                return None, None
+        api_url = f"https://saavn.dev/api/songs/{target_id}"
+        dl_link = None
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        songs = data.get("data", [])
+                        
+                        # Extract the highest quality download link
+                        if isinstance(songs, list) and songs:
+                            dls = songs[0].get("downloadUrl", [])
+                        elif isinstance(songs, dict):
+                            dls = songs.get("downloadUrl", [])
+                        else:
+                            dls = []
+                            
+                        dl_link = dls[-1].get("url") if dls else None
+        except Exception:
+            pass
 
-            if await is_on_off(1):
-                p = await yt_dlp_download(link, type="video", title=await self.title(link))
-                return (p, True) if p else (None, None)
-
-            stdout, _ = await _exec_proc(
-                "yt-dlp",
-                *(_cookies_args()),
-                "-g",
-                "-f",
-                "best[height<=?720][width<=?1280]",
-                link,
-            )
-            if stdout:
-                return stdout.decode().split("\n")[0], None
+        if not dl_link:
             return None, None
 
-        p = await yt_dlp_download(link, type="audio", title=await self.title(link))
+        # Pass the raw audio stream URL straight to our lightweight downloader!
+        p = await yt_dlp_download(dl_link, type="video" if video else "audio", title=await self.title(link))
         return (p, True) if p else (None, None)
