@@ -175,21 +175,16 @@ class YouTubeAPI:
     ) -> Tuple[str, Optional[str], int, str, str]:
         prepared_link = self._prepare_link(link, videoid)
 
-        try:
-            info = await self._fetch_video_info(prepared_link)
-            if not info:
-                raise ValueError("No results from youtubesearchpython (VideosSearch)")
-        except Exception as search_err:
-            raise ValueError("Video not found", {"cause": str(search_err)}) from search_err
+        info = await self._fetch_video_info(prepared_link)
+        if not info:
+            raise ValueError("Video not found via Piped API")
 
         dt = info.get("duration")
         ds = int(time_to_seconds(dt)) if dt else 0
-        thumb = (
-            info.get("thumbnail")
-            or info.get("thumbnails", [{}])[-1].get("url", "")
-        ).split("?")[0]
+        thumb = info.get("thumbnails", [{}])[0].get("url", "")
 
-        return info.get("title", ""), dt, ds, thumb, info.get("id", "")
+        return info.get("title", ""), dt, ds, thumb.split("?")[0] if thumb else "", info.get("id", "")
+
 
     @capture_internal_err
     async def title(self, link: str, videoid: Union[str, bool, None] = None) -> str:
@@ -212,56 +207,22 @@ class YouTubeAPI:
     @capture_internal_err
     async def track(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[Dict, str]:
         prepared_link = self._prepare_link(link, videoid)
+        
+        info = await self._fetch_video_info(prepared_link)
+        if not info:
+            raise ValueError(f"No results from Piped API for query/URL: '{prepared_link}'")
 
-        try:
-            info = await self._fetch_video_info(prepared_link)
-            if not info:
-                raise ValueError(
-                    f"No results from youtubesearchpython (VideosSearch) "
-                    f"for query/URL: '{prepared_link}'"
-                )
-        except Exception as search_err:
-            stdout, stderr = await _exec_proc(
-                "yt-dlp", *(_cookies_args()), "--dump-json", "--no-warnings", prepared_link
-            )
-
-            def _both_failed(details: str) -> ValueError:
-                return ValueError(
-                    f"Both methods failed for '{prepared_link}':\n"
-                    f"  1. youtubesearchpython error: {search_err}\n"
-                    f"{details}"
-                )
-
-            if not stdout:
-                stderr_msg = stderr.decode().strip() if stderr else "Empty response"
-                raise _both_failed(f"  2. yt-dlp error: {stderr_msg}")
-
-            try:
-                info = json.loads(stdout.decode())
-            except json.JSONDecodeError as json_err:
-                raw = stdout.decode()[:400]
-                raise _both_failed(
-                    f"  2. yt-dlp JSON error: {json_err}\n"
-                    f"     Raw: {raw}..."
-                ) from json_err
-
-        thumb = (
-            info.get("thumbnail")
-            or info.get("thumbnails", [{}])[-1].get("url", "")
-        ).split("?")[0]
+        thumb = info.get("thumbnails", [{}])[0].get("url", "")
 
         details = {
-            "title": info.get("title", ""),
-            "link": info.get("webpage_url", prepared_link),
+            "title": info.get("title", "Unknown Title"),
+            "link": f"https://www.youtube.com/watch?v={info.get('id', '')}",
             "vidid": info.get("id", ""),
-            "duration_min": (
-                info.get("duration")
-                if isinstance(info.get("duration"), str)
-                else None
-            ),
-            "thumb": thumb,
+            "duration_min": info.get("duration"),
+            "thumb": thumb.split("?")[0] if thumb else "",
         }
         return details, info.get("id", "")
+
 
     # === Media & Formats ===
     @capture_internal_err
