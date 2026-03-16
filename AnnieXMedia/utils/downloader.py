@@ -201,37 +201,51 @@ def get_final_path_from_info(info: Dict) -> Optional[str]:
 
 
 async def piped_download(vid: str, download_type: str) -> Optional[str]:
-    api_url = f"https://pipedapi.kavin.rocks/streams/{vid}"
+    PIPED_APIS = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.syncpundit.io",
+        "https://pipedapi.tokhmi.xyz",
+        "https://api.piped.yt",
+        "https://pipedapi.leptons.xyz"
+    ]
+    
     try:
         session = await get_http_session()
-        async with session.get(api_url, timeout=15) as resp:
-            if resp.status != 200:
-                return None
-            data = await resp.json()
+        for base_api in PIPED_APIS:
+            api_url = f"{base_api}/streams/{vid}"
+            try:
+                async with session.get(api_url, timeout=10) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json()
 
-            if download_type == "audio":
-                streams = data.get("audioStreams", [])
-                if not streams:
-                    return None
-                # Grab the highest bitrate m4a stream to save data and speed up download
-                best_stream = max([s for s in streams if s.get("format") == "m4a"] or streams, key=lambda x: x.get("bitrate", 0))
-                ext = "m4a"
-            else:
-                streams = data.get("videoStreams", [])
-                if not streams:
-                    return None
-                # Grab a standard mp4 stream
-                best_stream = next((s for s in streams if s.get("format") == "mp4" and s.get("quality") == "720p"), streams[0])
-                ext = "mp4"
+                    if download_type == "audio":
+                        streams = data.get("audioStreams", [])
+                        if not streams:
+                            continue
+                        best_stream = max([s for s in streams if s.get("format") == "m4a"] or streams, key=lambda x: x.get("bitrate", 0))
+                        ext = "m4a"
+                    else:
+                        streams = data.get("videoStreams", [])
+                        if not streams:
+                            continue
+                        best_stream = next((s for s in streams if s.get("format") == "mp4" and s.get("quality") == "720p"), streams[0])
+                        ext = "mp4"
 
-            dl_url = best_stream.get("url")
-            if not dl_url:
-                return None
+                    dl_url = best_stream.get("url")
+                    if not dl_url:
+                        continue
 
-            out_path = f"{DOWNLOAD_DIR}/{vid}.{ext}"
-            return await download_file(dl_url, out_path)
+                    out_path = f"{DOWNLOAD_DIR}/{vid}.{ext}"
+                    success_path = await download_file(dl_url, out_path)
+                    if success_path:
+                        return success_path # Download complete!
+            except Exception:
+                continue # Try the next server
+        return None
     except Exception:
         return None
+
 
 async def deduplicate_download(key: str, runner):
     async with _inflight_lock:
