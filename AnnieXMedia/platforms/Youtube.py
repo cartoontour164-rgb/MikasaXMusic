@@ -67,46 +67,46 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         if len(_cache) > YOUTUBE_META_MAX:
             _cache.clear()
 
-    # --- THE INVIDIOUS API ROTATOR ---
-    INVIDIOUS_APIS = [
-        "https://vid.puffyan.us",
-        "https://invidious.nerdvpn.de",
-        "https://inv.tux.pizza",
-        "https://invidious.jing.rocks",
-        "https://invidious.fdn.fr"
-    ]
-
+    # --- THE JIOSAAVN API PIVOT ---
     try:
         safe_query = urllib.parse.quote(query)
-        result = []
+        # Using a reliable open-source JioSaavn API
+        api_url = f"https://saavn.dev/api/search/songs?query={safe_query}"
         async with aiohttp.ClientSession() as session:
-            for base_api in INVIDIOUS_APIS:
-                api_url = f"{base_api}/api/v1/search?q={safe_query}"
-                try:
-                    async with session.get(api_url, timeout=7) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            first_video = next((item for item in data if item.get("type") == "video"), None)
-                            if first_video:
-                                duration_seconds = first_video.get("lengthSeconds", 0)
-                                mins, secs = divmod(duration_seconds, 60)
-                                
-                                # Fix proxied thumbnails
-                                thumb = first_video.get("videoThumbnails", [{}])[0].get("url", "")
-                                if thumb and thumb.startswith("/"):
-                                    thumb = base_api + thumb
-                                    
-                                result = [{
-                                    "id": first_video.get("videoId", ""),
-                                    "title": first_video.get("title", ""),
-                                    "duration": f"{mins}:{secs:02d}",
-                                    "thumbnails": [{"url": thumb}]
-                                }]
-                                break # Success! Stop searching
-                except Exception:
-                    continue # Server blocked us, instantly try the next one
+            async with session.get(api_url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    results = data.get("data", {}).get("results", [])
+                    if results:
+                        first = results[0]
+                        duration_seconds = int(first.get("duration", 0))
+                        mins, secs = divmod(duration_seconds, 60)
+                        
+                        images = first.get("image", [])
+                        thumb = images[-1].get("url") if images else ""
+                        
+                        # Grab the highest quality download link
+                        dls = first.get("downloadUrl", [])
+                        dl_link = dls[-1].get("url") if dls else ""
+                        
+                        result = [{
+                            "id": dl_link,  # Secretly passing the direct audio link as the ID!
+                            "title": first.get("name", "Unknown Title"),
+                            "duration": f"{mins}:{secs:02d}",
+                            "thumbnails": [{"url": thumb}],
+                            "raw_duration": duration_seconds
+                        }]
+                    else:
+                        result = []
+                else:
+                    result = []
     except Exception:
         result = []
+
+    if result:
+        async with _cache_lock:
+            _cache[key] = (now, result)
+    return result
 
 
 
@@ -179,21 +179,14 @@ class YouTubeAPI:
             return False
 
     @capture_internal_err
-    async def details(
-        self, link: str, videoid: Union[str, bool, None] = None
-    ) -> Tuple[str, Optional[str], int, str, str]:
-        prepared_link = self._prepare_link(link, videoid)
-
-        info = await self._fetch_video_info(prepared_link)
+    async def details(self, link: str, videoid: Union[str, bool, None] = None):
+        info = await self._fetch_video_info(link)
         if not info:
-            raise ValueError("Video not found via Piped API")
-
-        dt = info.get("duration")
-        ds = int(time_to_seconds(dt)) if dt else 0
+            raise ValueError("Song not found on JioSaavn")
         thumb = info.get("thumbnails", [{}])[0].get("url", "")
+        return info.get("title", ""), info.get("duration", ""), info.get("raw_duration", 0), thumb, info.get("id", "")
 
-        return info.get("title", ""), dt, ds, thumb.split("?")[0] if thumb else "", info.get("id", "")
-
+        
 
     @capture_internal_err
     async def title(self, link: str, videoid: Union[str, bool, None] = None) -> str:
@@ -214,21 +207,17 @@ class YouTubeAPI:
         ).split("?")[0] if info else ""
 
     @capture_internal_err
-    async def track(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[Dict, str]:
-        prepared_link = self._prepare_link(link, videoid)
-        
-        info = await self._fetch_video_info(prepared_link)
+    async def track(self, link: str, videoid: Union[str, bool, None] = None):
+        info = await self._fetch_video_info(link)
         if not info:
-            raise ValueError(f"No results from Piped API for query/URL: '{prepared_link}'")
-
+            raise ValueError("Song not found on JioSaavn")
         thumb = info.get("thumbnails", [{}])[0].get("url", "")
-
         details = {
-            "title": info.get("title", "Unknown Title"),
-            "link": f"https://www.youtube.com/watch?v={info.get('id', '')}",
-            "vidid": info.get("id", ""),
-            "duration_min": info.get("duration"),
-            "thumb": thumb.split("?")[0] if thumb else "",
+            "title": info.get("title", ""),
+            "link": info.get("id", ""), # This is now the direct download link
+            "vidid": "jiosaavn_track", 
+            "duration_min": info.get("duration", ""),
+            "thumb": thumb,
         }
         return details, info.get("id", "")
 
