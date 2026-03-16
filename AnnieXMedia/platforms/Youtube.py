@@ -66,48 +66,60 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         if len(_cache) > YOUTUBE_META_MAX:
             _cache.clear()
 
-    SAAVN_APIS = [
-        "https://saavn.dev",
-        "https://jiosaavn-api-privatecvc2.vercel.app",
-        "https://jiosaavn-api-v3.vercel.app",
-        "https://saavn.me"
-    ]
+    # --- THE STOLEN OFFICIAL JIOSAAVN API ---
     try:
-        import urllib.parse
         import aiohttp
-        safe_query = urllib.parse.quote(query)
+        api_url = "https://www.jiosaavn.com/api.php"
+        
+        # Stolen directly from Ns-AnoNymouS
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+            "Referer": "https://www.jiosaavn.com/",
+            "Origin": "https://www.jiosaavn.com"
+        }
+        
+        params = {
+            'p': 1,
+            'q': query,
+            '__call': 'search.getResults',
+            'api_version': 4,
+            'n': 5,
+            '_format': 'json',
+            '_marker': 0,
+            'ctx': 'web6dot0'
+        }
+
         result = []
         async with aiohttp.ClientSession() as session:
-            for base_api in SAAVN_APIS:
-                try:
-                    api_url = f"{base_api}/api/search/songs?query={safe_query}" if "dev" in base_api else f"{base_api}/search/songs?query={safe_query}"
-                    async with session.get(api_url, timeout=7) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            results = data.get("data", {}).get("results", [])
-                            if results:
-                                first = results[0]
-                                duration_seconds = int(first.get("duration", 0))
-                                mins, secs = divmod(duration_seconds, 60)
-                                images = first.get("image", [])
-                                thumb = images[-1].get("url") if images else ""
-                                result = [{
-                                    "id": first.get("id"),
-                                    "title": first.get("name", "Unknown Title"),
-                                    "duration": f"{mins}:{secs:02d}",
-                                    "thumbnails": [{"url": thumb}],
-                                    "raw_duration": duration_seconds
-                                }]
-                                break
-                except Exception:
-                    continue
-    except Exception:
+            async with session.get(api_url, params=params, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    results = data.get("results", [])
+                    if results:
+                        first = results[0]
+                        # JioSaavn official API returns duration in seconds as a string
+                        duration_seconds = int(first.get("duration", 0))
+                        mins, secs = divmod(duration_seconds, 60)
+                        
+                        # Fix image URL (JioSaavn returns low res by default, replace with 500x500)
+                        thumb = first.get("image", "").replace("150x150", "500x500")
+                        
+                        result = [{
+                            "id": first.get("id"),
+                            "title": first.get("title", "Unknown Title"),
+                            "duration": f"{mins}:{secs:02d}",
+                            "thumbnails": [{"url": thumb}],
+                            "raw_duration": duration_seconds
+                        }]
+    except Exception as e:
+        print(f"JioSaavn API Error: {e}")
         result = []
 
     if result:
         async with _cache_lock:
             _cache[key] = (now, result)
     return result
+
 
 
 
