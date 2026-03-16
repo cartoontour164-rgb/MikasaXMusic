@@ -200,19 +200,19 @@ def get_final_path_from_info(info: Dict) -> Optional[str]:
     return matches[0] if matches else None
 
 
-async def piped_download(vid: str, download_type: str) -> Optional[str]:
-    PIPED_APIS = [
-        "https://pipedapi.kavin.rocks",
-        "https://pipedapi.syncpundit.io",
-        "https://pipedapi.tokhmi.xyz",
-        "https://api.piped.yt",
-        "https://pipedapi.leptons.xyz"
+async def invidious_download(vid: str, download_type: str) -> Optional[str]:
+    INVIDIOUS_APIS = [
+        "https://vid.puffyan.us",
+        "https://invidious.nerdvpn.de",
+        "https://inv.tux.pizza",
+        "https://invidious.jing.rocks",
+        "https://invidious.fdn.fr"
     ]
     
     try:
         session = await get_http_session()
-        for base_api in PIPED_APIS:
-            api_url = f"{base_api}/streams/{vid}"
+        for base_api in INVIDIOUS_APIS:
+            api_url = f"{base_api}/api/v1/videos/{vid}"
             try:
                 async with session.get(api_url, timeout=10) as resp:
                     if resp.status != 200:
@@ -220,16 +220,17 @@ async def piped_download(vid: str, download_type: str) -> Optional[str]:
                     data = await resp.json()
 
                     if download_type == "audio":
-                        streams = data.get("audioStreams", [])
-                        if not streams:
+                        streams = data.get("adaptiveFormats", [])
+                        audio_streams = [s for s in streams if "audio/" in s.get("type", "")]
+                        if not audio_streams:
                             continue
-                        best_stream = max([s for s in streams if s.get("format") == "m4a"] or streams, key=lambda x: x.get("bitrate", 0))
-                        ext = "m4a"
+                        best_stream = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
+                        ext = "m4a" if "mp4" in best_stream.get("type", "") else "webm"
                     else:
-                        streams = data.get("videoStreams", [])
+                        streams = data.get("formatStreams", [])
                         if not streams:
                             continue
-                        best_stream = next((s for s in streams if s.get("format") == "mp4" and s.get("quality") == "720p"), streams[0])
+                        best_stream = streams[0]
                         ext = "mp4"
 
                     dl_url = best_stream.get("url")
@@ -239,12 +240,13 @@ async def piped_download(vid: str, download_type: str) -> Optional[str]:
                     out_path = f"{DOWNLOAD_DIR}/{vid}.{ext}"
                     success_path = await download_file(dl_url, out_path)
                     if success_path:
-                        return success_path # Download complete!
+                        return success_path
             except Exception:
-                continue # Try the next server
+                continue
         return None
     except Exception:
         return None
+
 
 
 async def deduplicate_download(key: str, runner):
@@ -277,9 +279,9 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
     key = f"{type}:{link}"
 
     async def run():
-        result = await piped_download(vid, type)
+        result = await invidious_download(vid, type)
         if result and title:
-            log_download_source(title, "Piped API Direct Stream")
+            log_download_source(title, "Invidious API Direct Stream")
         return result
 
     return await deduplicate_download(key, run)
