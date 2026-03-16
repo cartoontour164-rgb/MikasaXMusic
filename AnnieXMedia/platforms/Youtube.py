@@ -53,7 +53,7 @@ async def _exec_proc(*args: str) -> Tuple[bytes, bytes]:
         return b"", b"timeout"
 
 
-@@capture_internal_err
+@capture_internal_err
 async def cached_youtube_search(query: str) -> List[Dict]:
     key = f"q:{query}"
     now = time.time()
