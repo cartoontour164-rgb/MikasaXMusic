@@ -9,6 +9,7 @@ from typing import Dict, Optional
 import aiofiles
 import aiohttp
 from aiohttp import TCPConnector
+from yt_dlp import YoutubeDL
 
 
 from AnnieXMedia.core.dir import CACHE_DIR, DOWNLOAD_DIR
@@ -199,55 +200,18 @@ def get_final_path_from_info(info: Dict) -> Optional[str]:
     )
     return matches[0] if matches else None
 
-
-async def invidious_download(vid: str, download_type: str) -> Optional[str]:
-    INVIDIOUS_APIS = [
-        "https://vid.puffyan.us",
-        "https://invidious.nerdvpn.de",
-        "https://inv.tux.pizza",
-        "https://invidious.jing.rocks",
-        "https://invidious.fdn.fr"
-    ]
-    
+def download_with_ytdlp_sync(link: str, fmt: str) -> Optional[str]:
     try:
-        session = await get_http_session()
-        for base_api in INVIDIOUS_APIS:
-            api_url = f"{base_api}/api/v1/videos/{vid}"
-            try:
-                async with session.get(api_url, timeout=10) as resp:
-                    if resp.status != 200:
-                        continue
-                    data = await resp.json()
-
-                    if download_type == "audio":
-                        streams = data.get("adaptiveFormats", [])
-                        audio_streams = [s for s in streams if "audio/" in s.get("type", "")]
-                        if not audio_streams:
-                            continue
-                        best_stream = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
-                        ext = "m4a" if "mp4" in best_stream.get("type", "") else "webm"
-                    else:
-                        streams = data.get("formatStreams", [])
-                        if not streams:
-                            continue
-                        best_stream = streams[0]
-                        ext = "mp4"
-
-                    dl_url = best_stream.get("url")
-                    if not dl_url:
-                        continue
-
-                    out_path = f"{DOWNLOAD_DIR}/{vid}.{ext}"
-                    success_path = await download_file(dl_url, out_path)
-                    if success_path:
-                        return success_path
-            except Exception:
-                continue
-        return None
+        opts = get_ytdlp_base_opts()
+        opts["format"] = fmt
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(link, download=False)
+            if path := get_final_path_from_info(info):
+                return path
+            ydl.download([link])
+            return get_final_path_from_info(info)
     except Exception:
         return None
-
-
 
 async def deduplicate_download(key: str, runner):
     async with _inflight_lock:
@@ -267,21 +231,21 @@ async def deduplicate_download(key: str, runner):
             _inflight.pop(key, None)
 
 async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str]:
+    loop = asyncio.get_running_loop()
     vid = extract_video_id(link)
     if not vid:
         return None
 
     if cached := find_cached_file(vid):
-        if title:
-            LOGGER.info(f"Track '{title}' - Served from cache")
         return cached
 
     key = f"{type}:{link}"
 
     async def run():
-        result = await invidious_download(vid, type)
+        fmt = "bestaudio[ext=webm][acodec=opus]" if type == "audio" else "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)"
+        result = await loop.run_in_executor(None, download_with_ytdlp_sync, link, fmt)
         if result and title:
-            log_download_source(title, "Invidious API Direct Stream")
+            log_download_source(title, "yt-dlp with Cookies")
         return result
 
     return await deduplicate_download(key, run)
