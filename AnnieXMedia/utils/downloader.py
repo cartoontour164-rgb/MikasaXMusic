@@ -231,21 +231,22 @@ async def deduplicate_download(key: str, runner):
             _inflight.pop(key, None)
 
 async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str]:
-    loop = asyncio.get_running_loop()
-    vid = extract_video_id(link)
-    if not vid:
+    # In our JioSaavn setup, 'link' is actually the direct streaming URL
+    if not link or not link.startswith("http"):
         return None
 
-    if cached := find_cached_file(vid):
-        return cached
+    # Generate a safe file name based on the current time
+    import time
+    vid = str(int(time.time()))
+    out_path = f"{DOWNLOAD_DIR}/{vid}.mp4"
 
     key = f"{type}:{link}"
 
     async def run():
-        fmt = "bestaudio[ext=webm][acodec=opus]" if type == "audio" else "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)"
-        result = await loop.run_in_executor(None, download_with_ytdlp_sync, link, fmt)
+        # Uses the built-in aiohttp downloader at the top of the file
+        result = await download_file(link, out_path)
         if result and title:
-            log_download_source(title, "yt-dlp with Cookies")
+            log_download_source(title, "JioSaavn Direct Stream")
         return result
 
     return await deduplicate_download(key, run)
